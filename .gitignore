@@ -1,0 +1,9 @@
+# run artifacts / journal — never commit machine-local state
+*.jsonl
+journal.jsonl
+fusion.*/
+.DS_Store
+
+# if this folder is ever used as a live tenet project, keep its state out
+.tenet/
+.claude/settings.local.json
