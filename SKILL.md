@@ -122,8 +122,8 @@ capacity).
 Judges: Opus + GPT-5.5. **3 vendors live** (Anthropic ×2, OpenAI, Google). **Effort is
 pinned in-script at each vendor's ceiling** — Opus at `max`, codex/GPT at `xhigh` (its
 top) — so the panel stays balanced and nothing inherits ambient config / silently
-drifts. Floor is `xhigh`; the leg can flex down to `xhigh` via `CLAUDE_LEG_EFFORT` if it
-times out (a completed xhigh leg beats a timed-out max leg), but judge + synth stay
+drifts. Floor is `xhigh`; the leg can flex down to `xhigh` via `FUSION_OPUS_LEG_EFFORT`
+if it times out (a completed xhigh leg beats a timed-out max leg), but judge + synth stay
 `max`. Caps are sized for this: `LEG_TIMEOUT` 480s, `JUDGE_TIMEOUT` 600s.
 
 ### Gemini capacity note
