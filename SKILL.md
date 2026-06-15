@@ -80,6 +80,11 @@ answers; an embedded design + a pointed question produces the value.
   `design`, …). **When you invoke /fusion, set FUSION_TAG to a one-word class for the
   task** — it makes the which-model-wins data sliceable and far more useful.
 - `FUSION_NO_JOURNAL=1 ...` — skip journaling for this run.
+- `CODEX_REASONING_EFFORT=medium ...` — reasoning effort for the GPT leg **and** GPT
+  judge (default `high`; values `minimal|low|medium|high`). `CODEX_MODEL=...` pins the
+  codex model (default `gpt-5.5`). These are pinned in-script so fusion never silently
+  follows a change to the global `~/.codex/config.toml`; each run journals
+  `codex.model`/`codex.effort` so you can slice the data by them.
 
 ## Journaling & stats
 
@@ -109,7 +114,10 @@ capacity).
 | gpt | gpt-5.5 (codex) | ChatGPT/Codex |
 | gemini | gemini-2.5-flash | Google |
 
-Judges: Opus + GPT-5.5. **3 vendors live** (Anthropic ×2, OpenAI, Google).
+Judges: Opus + GPT-5.5. **3 vendors live** (Anthropic ×2, OpenAI, Google). The codex
+(GPT) leg and judge are pinned in-script to `gpt-5.5` at `high` reasoning effort — they
+do **not** inherit the global `~/.codex/config.toml`, so fusion can't silently drift off
+the intended model/effort. Override per-run with `CODEX_MODEL` / `CODEX_REASONING_EFFORT`.
 
 ### Gemini capacity note
 `gemini-2.5-pro` is frequently capacity-exhausted on the free/AI tier — the CLI then

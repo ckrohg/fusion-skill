@@ -17,6 +17,8 @@
 #   ./fusion.sh "task..."          |  echo "task" | ./fusion.sh
 #   KEEP=1 ./fusion.sh "..."       # keep run dir (panel + both judge files)
 #   LEG_TIMEOUT=180 ./fusion.sh    # per-leg wall-clock cap (default 240s)
+#   CODEX_REASONING_EFFORT=medium ./fusion.sh   # GPT leg+judge effort (default high)
+#   CODEX_MODEL=gpt-5.5 ./fusion.sh             # pin the codex model (default gpt-5.5)
 #
 set -uo pipefail
 
@@ -30,6 +32,11 @@ LEG_TIMEOUT="${LEG_TIMEOUT:-240}"
 JUDGE_TIMEOUT="${JUDGE_TIMEOUT:-300}"
 FUSION_JOURNAL="${FUSION_JOURNAL:-$HOME/.local/share/tenet/fusion/journal.jsonl}"
 FUSION_TAG="${FUSION_TAG:-}"        # optional task-class tag for worldengine analysis
+# GPT leg + GPT judge run through codex. Pin them EXPLICITLY here so fusion never
+# silently follows a change to the global ~/.codex/config.toml, and so they run at
+# full reasoning for these high-stakes calls. Override either via env.
+CODEX_MODEL="${CODEX_MODEL:-gpt-5.5}"                 # the codex model for leg + judge
+CODEX_EFFORT="${CODEX_REASONING_EFFORT:-high}"        # reasoning effort: minimal|low|medium|high
 TIMEOUT_BIN="$(command -v timeout || command -v gtimeout || echo '')"
 maybe_timeout() {                 # maybe_timeout <secs> cmd... (no-op if no timeout bin)
   local secs="$1"; shift
@@ -50,7 +57,7 @@ command -v gemini >/dev/null 2>&1 && LEGS+=("gemini gemini ${GEMINI_MODEL:-gemin
 RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/fusion.XXXXXX")"
 cleanup() { [ "${KEEP:-0}" = "1" ] || rm -rf "$RUN_DIR"; }
 trap cleanup EXIT
-echo "fusion: ${#LEGS[@]} legs -> 2 judges (opus + gpt-5.5) -> synthesize   ($RUN_DIR)" >&2
+echo "fusion: ${#LEGS[@]} legs -> 2 judges (opus + ${CODEX_MODEL}@${CODEX_EFFORT}) -> synthesize   ($RUN_DIR)" >&2
 
 # ---- Phase 1: fan-out, parallel, per-leg timeout --------------------------
 run_leg() {                       # $1=label $2=kind $3=model ; reads $TASK
@@ -58,7 +65,7 @@ run_leg() {                       # $1=label $2=kind $3=model ; reads $TASK
   local out="$RUN_DIR/$label.out" log="$RUN_DIR/$label.log"
   case "$kind" in
     claude) maybe_timeout "$LEG_TIMEOUT" claude -p --model "$model" "$TASK"                              >"$out" 2>"$log" ;;
-    codex)  maybe_timeout "$LEG_TIMEOUT" codex exec --skip-git-repo-check -s read-only -o "$out" "$TASK" >"$log" 2>&1     ;;
+    codex)  maybe_timeout "$LEG_TIMEOUT" codex exec --skip-git-repo-check -s read-only -m "$CODEX_MODEL" -c model_reasoning_effort="$CODEX_EFFORT" -o "$out" "$TASK" >"$log" 2>&1 ;;
     gemini) maybe_timeout "$LEG_TIMEOUT" gemini -m "$model" -p "$TASK"                                   >"$out" 2>"$log" ;;
     *)      echo "unknown leg kind: $kind" >"$log" ;;
   esac
@@ -67,7 +74,7 @@ run_leg() {                       # $1=label $2=kind $3=model ; reads $TASK
 PIDS=(); NAMES=()
 for leg in "${LEGS[@]}"; do
   set -- $leg
-  m="$3"; [ "$2" = "codex" ] && [ "$m" = "-" ] && m="gpt-5.5"   # normalize model name for the journal
+  m="$3"; [ "$2" = "codex" ] && [ "$m" = "-" ] && m="$CODEX_MODEL"   # journal the real pinned model
   echo "$m" > "$RUN_DIR/$1.model"
   run_leg "$1" "$2" "$3" &
   PIDS+=("$!"); NAMES+=("$1")
@@ -153,7 +160,7 @@ JUDGE_OPUS="$RUN_DIR/judge_opus.txt"; JUDGE_GPT="$RUN_DIR/judge_gpt.txt"
 JP_O="$(make_judge_prompt "$RUN_DIR/panel_opus.txt")"   # Opus judge sees its own shuffle
 JP_G="$(make_judge_prompt "$RUN_DIR/panel_gpt.txt")"    # GPT  judge sees a different shuffle
 ( maybe_timeout "$JUDGE_TIMEOUT" claude -p --model opus "$JP_O" >"$JUDGE_OPUS" 2>"$RUN_DIR/judge_opus.log" ) & JPID_O=$!
-( maybe_timeout "$JUDGE_TIMEOUT" codex exec --skip-git-repo-check -s read-only -o "$JUDGE_GPT" "$JP_G" >"$RUN_DIR/judge_gpt.log" 2>&1 ) & JPID_G=$!
+( maybe_timeout "$JUDGE_TIMEOUT" codex exec --skip-git-repo-check -s read-only -m "$CODEX_MODEL" -c model_reasoning_effort="$CODEX_EFFORT" -o "$JUDGE_GPT" "$JP_G" >"$RUN_DIR/judge_gpt.log" 2>&1 ) & JPID_G=$!
 wait "$JPID_O"; wait "$JPID_G"
 
 parse_pick() { grep -m1 -oiE 'PREFERRED:[[:space:]]*Response[[:space:]]*[0-9]+' "$1" 2>/dev/null | grep -oE '[0-9]+' | head -1; }
@@ -251,6 +258,7 @@ if [ "${FUSION_NO_JOURNAL:-0}" != "1" ]; then
   FJ_TAG="$FUSION_TAG" FJ_SIGNAL="${SIGNAL%% *}" FJ_N="$n" \
   FJ_PICK_O="${PICK_O:-}" FJ_PICK_G="${PICK_G:-}" FJ_CONV_O="${CONV_O:-}" FJ_CONV_G="${CONV_G:-}" \
   FJ_WIN_O="$WIN_O" FJ_WIN_G="$WIN_G" FJ_WALL="$(( $(date +%s) - START_EPOCH ))" \
+  FJ_CODEX_MODEL="$CODEX_MODEL" FJ_CODEX_EFFORT="$CODEX_EFFORT" \
   python3 - "$FUSION_JOURNAL" >>"$RUN_DIR/journal.log" 2>&1 <<'PY'
 import json, os, sys
 def env(k):
@@ -273,6 +281,7 @@ except Exception:
 task = os.environ.get('FJ_TASK', '')
 rec = {"ts": env('FJ_TS'), "kind": "fusion", "run_id": env('FJ_RUNID'), "cwd": env('FJ_CWD'),
        "anon": "per_judge_shuffle_v1",
+       "codex": {"model": env('FJ_CODEX_MODEL'), "effort": env('FJ_CODEX_EFFORT')},
        "tag": env('FJ_TAG'), "task_preview": task[:240], "task_chars": len(task),
        "n_legs": i(env('FJ_N')), "signal": env('FJ_SIGNAL'),
        "judges": {"opus": {"pick": i(env('FJ_PICK_O')), "convergence": env('FJ_CONV_O')},
