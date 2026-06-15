@@ -36,9 +36,9 @@ for line in open(path):
     po, pg = w.get("opus_judge"), w.get("gpt_judge")
     if po: wins[po] += 1
     if pg: wins[pg] += 1
-    jo = (r.get("judges",{}).get("opus",{}) or {}).get("pick")
-    jg = (r.get("judges",{}).get("gpt",{})  or {}).get("pick")
-    if jo is not None and jo == jg: agree += 1
+    # compare the de-anonymized winner labels, not raw pick #s — under per-judge
+    # shuffle the integers live in different spaces; labels are the only comparable key
+    if po and pg and po == pg: agree += 1
     for leg in r.get("legs", []):
         k = leg.get("model") or leg.get("label") or "?"
         s = rel[k]; s["runs"] += 1; s["bytes"] += leg.get("bytes") or 0

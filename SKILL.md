@@ -85,9 +85,10 @@ answers; an embedded design + a pointed question produces the value.
 
 Every run appends one JSON line to `~/.local/share/tenet/fusion/journal.jsonl`
 (machine-global, append-only — the worldengine reference-class philosophy). Each record
-captures **which model each judge preferred** (the anonymized Response-# pick mapped
-back to the real leg/model), the CONVERGENT/DIVERGENT signal, the tag, per-leg
-reliability (exit / bytes / timed-out), and wall time. Journaling is best-effort — a
+captures **which model each judge preferred** (each judge's own-shuffle Response-# pick
+mapped back to the real leg via its private map; `winners.*` holds the labels), the
+CONVERGENT/DIVERGENT signal, the tag, per-leg reliability (exit / bytes / timed-out,
+plus each leg's `response_n_opus`/`response_n_gpt` slot), and wall time. Journaling is best-effort — a
 failure never affects the run.
 
 Read it back with the companion reader (symlinked into the skill dir):
@@ -120,6 +121,17 @@ GEMINI_MODEL=gemini-2.5-pro ~/.claude/skills/fusion/fusion.sh "..."
 ```
 The script auto-detects `gemini` on PATH; if it's ever uninstalled the panel silently
 drops to 3 legs.
+
+## Anonymization (per-judge shuffle)
+
+The two judges never see vendor labels, and as of `anon=per_judge_shuffle_v1` each
+judge sees the panel in its **own independent random order** (Fisher-Yates). Response 1
+is no longer always Opus, so neither judge can use position as a vendor tell — this
+removes the position confound that an identically-numbered panel baked into both picks.
+Consequence: the raw `pick` integers in the journal are per-judge-private and **not**
+comparable across judges; only the de-anonymized leg labels in `winners.*` (and the
+stderr `picks:` line) are. The synthesizer gets a separate canonical panel and is told
+the judges' numberings don't correspond, so it identifies responses by content.
 
 ## Notes
 

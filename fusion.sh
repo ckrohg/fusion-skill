@@ -83,20 +83,50 @@ for i in "${!PIDS[@]}"; do
   fi
 done
 
-# ---- anonymized panel (vendor-blind; same numbering for both judges) -------
-PANEL="$RUN_DIR/panel.txt"; : >"$PANEL"; RMAP="$RUN_DIR/response_map.txt"; : >"$RMAP"; n=0
+# ---- per-judge anonymized panels (vendor-blind AND independently shuffled) --
+# Each judge gets its OWN random response ordering, so position carries no vendor
+# signal (Response 1 is no longer always Opus). This removes the position confound
+# that an un-shuffled, identically-numbered panel bakes into both judges' picks.
+# map_<judge>.txt line k = the leg behind that judge's "Response k" (used to
+# de-anonymize the pick afterwards). Picks are NO LONGER comparable as raw integers
+# across judges — only the mapped leg labels are.
+OK_LABELS=()
 for label in "${NAMES[@]}"; do
-  out="$RUN_DIR/$label.out"; [ -s "$out" ] || continue
-  n=$((n+1)); echo "$label" >> "$RMAP"     # line n = the leg behind "Response n"
-  { echo "===== Response $n ====="; cat "$out"; echo; } >>"$PANEL"
+  [ -s "$RUN_DIR/$label.out" ] && OK_LABELS+=("$label")
 done
+n=${#OK_LABELS[@]}
 [ "$n" -eq 0 ] && { echo "fusion: every leg failed — see $RUN_DIR/*.log" >&2; KEEP=1; exit 1; }
 [ "$n" -lt 2 ] && echo "fusion: WARNING only $n leg(s) succeeded — no real ensemble" >&2
 
+shuffle_to() {                    # $1=outfile, rest=items ; Fisher-Yates via $RANDOM (bash 3.2)
+  local out="$1"; shift
+  local arr=("$@") i j tmp
+  for (( i=${#arr[@]}-1; i>0; i-- )); do
+    j=$(( RANDOM % (i+1) ))
+    tmp="${arr[i]}"; arr[i]="${arr[j]}"; arr[j]="$tmp"
+  done
+  printf '%s\n' "${arr[@]}" >"$out"
+}
+build_panel() {                   # $1=judge key -> panel_<key>.txt + map_<key>.txt
+  local map="$RUN_DIR/map_$1.txt" panel="$RUN_DIR/panel_$1.txt" k=0 label
+  shuffle_to "$map" "${OK_LABELS[@]}"      # independent shuffle per call (RANDOM advances globally)
+  : >"$panel"
+  while IFS= read -r label; do
+    [ -n "$label" ] || continue
+    k=$((k+1))
+    { echo "===== Response $k ====="; cat "$RUN_DIR/$label.out"; echo; } >>"$panel"
+  done <"$map"
+}
+build_panel opus
+build_panel gpt
+
 # ---- Phase 2: two independent cross-vendor judges --------------------------
-cat > "$RUN_DIR/judge_prompt.txt" <<EOF
+make_judge_prompt() {             # $1 = that judge's panel file -> prompt on stdout
+cat <<EOF
 You are one of two INDEPENDENT judges comparing $n anonymized responses to a task.
-Be vendor-blind; assume no response is authoritative.
+Be vendor-blind; assume no response is authoritative. The responses are in a RANDOM
+order chosen independently for you — position carries no meaning, so do not infer
+anything about a response from its number.
 
 Your FIRST TWO lines MUST be exactly:
 PREFERRED: Response <k>
@@ -116,18 +146,31 @@ TASK:
 $TASK
 
 RESPONSES:
-$(cat "$PANEL")
+$(cat "$1")
 EOF
-JP="$(cat "$RUN_DIR/judge_prompt.txt")"
+}
 JUDGE_OPUS="$RUN_DIR/judge_opus.txt"; JUDGE_GPT="$RUN_DIR/judge_gpt.txt"
-( maybe_timeout "$JUDGE_TIMEOUT" claude -p --model opus "$JP" >"$JUDGE_OPUS" 2>"$RUN_DIR/judge_opus.log" ) & JPID_O=$!
-( maybe_timeout "$JUDGE_TIMEOUT" codex exec --skip-git-repo-check -s read-only -o "$JUDGE_GPT" "$JP" >"$RUN_DIR/judge_gpt.log" 2>&1 ) & JPID_G=$!
+JP_O="$(make_judge_prompt "$RUN_DIR/panel_opus.txt")"   # Opus judge sees its own shuffle
+JP_G="$(make_judge_prompt "$RUN_DIR/panel_gpt.txt")"    # GPT  judge sees a different shuffle
+( maybe_timeout "$JUDGE_TIMEOUT" claude -p --model opus "$JP_O" >"$JUDGE_OPUS" 2>"$RUN_DIR/judge_opus.log" ) & JPID_O=$!
+( maybe_timeout "$JUDGE_TIMEOUT" codex exec --skip-git-repo-check -s read-only -o "$JUDGE_GPT" "$JP_G" >"$RUN_DIR/judge_gpt.log" 2>&1 ) & JPID_G=$!
 wait "$JPID_O"; wait "$JPID_G"
 
 parse_pick() { grep -m1 -oiE 'PREFERRED:[[:space:]]*Response[[:space:]]*[0-9]+' "$1" 2>/dev/null | grep -oE '[0-9]+' | head -1; }
 parse_conv() { grep -m1 -iE 'CONVERGENCE:' "$1" 2>/dev/null | grep -oiE 'CONVERGENT|DIVERGENT' | head -1 | tr '[:lower:]' '[:upper:]'; }
 PICK_O="$(parse_pick "$JUDGE_OPUS")"; CONV_O="$(parse_conv "$JUDGE_OPUS")"; [ -s "$JUDGE_OPUS" ] || { PICK_O=""; CONV_O=""; }
 PICK_G="$(parse_pick "$JUDGE_GPT")";  CONV_G="$(parse_conv "$JUDGE_GPT")";  [ -s "$JUDGE_GPT" ]  || { PICK_G=""; CONV_G=""; }
+
+# Map each judge's pick through ITS OWN shuffle to the real leg label. Because the two
+# judges saw different orderings, PICK_O and PICK_G are integers in different spaces —
+# only WIN_O/WIN_G (the de-anonymized leg labels) are comparable across judges.
+WIN_O=""; [ -n "$PICK_O" ] && WIN_O="$(sed -n "${PICK_O}p" "$RUN_DIR/map_opus.txt" 2>/dev/null)"
+WIN_G=""; [ -n "$PICK_G" ] && WIN_G="$(sed -n "${PICK_G}p" "$RUN_DIR/map_gpt.txt"  2>/dev/null)"
+if [ -n "$WIN_O" ] && [ -n "$WIN_G" ]; then
+  [ "$WIN_O" = "$WIN_G" ] && AGREE="SAME" || AGREE="DIFFERENT"
+else
+  AGREE="UNKNOWN"
+fi
 
 # Headline signal = do the two judges agree the PANEL converges on one bottom line?
 # (conclusion-level, not preference-level — a single preferred pick is near-always split.)
@@ -140,19 +183,28 @@ elif [ -n "$CONV_O$CONV_G" ]; then
 else
   SIGNAL="UNDETERMINED — convergence verdict could not be parsed"
 fi
-PICKNOTE="picks: Opus->Response ${PICK_O:-?}, GPT-5.5->Response ${PICK_G:-?}"
+PICKNOTE="picks: Opus->${WIN_O:-?}, GPT-5.5->${WIN_G:-?}  (judges preferred the $AGREE leg)"
 echo "  judge signal: $SIGNAL" >&2
 echo "    $PICKNOTE" >&2
 [ -s "$JUDGE_OPUS" ] || echo "(Judge A / Opus unavailable — see judge_opus.log)" > "$JUDGE_OPUS"
 [ -s "$JUDGE_GPT" ]  || echo "(Judge B / GPT-5.5 unavailable — see judge_gpt.log)" > "$JUDGE_GPT"
 
 # ---- Phase 3: consensus-gated synthesis -----------------------------------
+# canonical panel for the synthesizer; its numbering is independent of either judge's
+# private shuffle, so the synth must NOT cross-reference a judge's "Response k" to it.
+PANEL_SYNTH="$RUN_DIR/panel_synth.txt"; : >"$PANEL_SYNTH"; k=0
+for label in "${OK_LABELS[@]}"; do
+  k=$((k+1)); { echo "===== Response $k ====="; cat "$RUN_DIR/$label.out"; echo; } >>"$PANEL_SYNTH"
+done
 cat > "$RUN_DIR/synth_prompt.txt" <<EOF
 You are a synthesizer. Two independent judges (A = Claude Opus, B = GPT-5.5) each
 analyzed $n anonymized responses and named a preferred one.
 
 JUDGE SIGNAL: $SIGNAL
-($PICKNOTE)
+(The two judges preferred the $AGREE underlying response. Each judge saw the responses
+in its own private random order, so a judge's "Response k" does NOT correspond to the
+other judge's numbering or to the RAW RESPONSES below — identify responses by content,
+not by number.)
 - If CONVERGENT, write a confident single best answer.
 - If DIVERGENT or MIXED, weigh both judges' reasoning, take the best-supported position,
   and surface the key disagreement in ONE short clause so the reader sees where the
@@ -173,7 +225,7 @@ JUDGE B (GPT-5.5):
 $(cat "$JUDGE_GPT")
 
 RAW RESPONSES:
-$(cat "$PANEL")
+$(cat "$PANEL_SYNTH")
 EOF
 maybe_timeout "$JUDGE_TIMEOUT" claude -p --model opus "$(cat "$RUN_DIR/synth_prompt.txt")" 2>"$RUN_DIR/synth.log"
 
@@ -183,18 +235,16 @@ maybe_timeout "$JUDGE_TIMEOUT" claude -p --model opus "$(cat "$RUN_DIR/synth_pro
 # is anonymized, so we map each judge's Response-# pick back to the real leg/model.
 # Best-effort: a journaling failure never affects the run (explicit exit 0 below).
 if [ "${FUSION_NO_JOURNAL:-0}" != "1" ]; then
-  label_for_response() { sed -n "${1}p" "$RUN_DIR/response_map.txt" 2>/dev/null; }
   : > "$RUN_DIR/legs.tsv"
   for label in "${NAMES[@]}"; do
     ex="$(cat "$RUN_DIR/$label.exit" 2>/dev/null || echo '?')"
     by="$(wc -c <"$RUN_DIR/$label.out" 2>/dev/null | tr -d ' ')"
     md="$(cat "$RUN_DIR/$label.model" 2>/dev/null)"
-    rn="$(grep -nxF "$label" "$RUN_DIR/response_map.txt" 2>/dev/null | head -1 | cut -d: -f1)"
+    rno="$(grep -nxF "$label" "$RUN_DIR/map_opus.txt" 2>/dev/null | head -1 | cut -d: -f1)"
+    rng="$(grep -nxF "$label" "$RUN_DIR/map_gpt.txt"  2>/dev/null | head -1 | cut -d: -f1)"
     to=false; [ "$ex" = "124" ] && to=true
-    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$label" "$md" "$ex" "${by:-0}" "$to" "${rn:-}" >> "$RUN_DIR/legs.tsv"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$label" "$md" "$ex" "${by:-0}" "$to" "${rno:-}" "${rng:-}" >> "$RUN_DIR/legs.tsv"
   done
-  WIN_O=""; [ -n "$PICK_O" ] && WIN_O="$(label_for_response "$PICK_O")"
-  WIN_G=""; [ -n "$PICK_G" ] && WIN_G="$(label_for_response "$PICK_G")"
   mkdir -p "$(dirname "$FUSION_JOURNAL")" 2>/dev/null
   FJ_TASK="$TASK" FJ_LEGS="$RUN_DIR/legs.tsv" \
   FJ_TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)" FJ_RUNID="$(basename "$RUN_DIR")" FJ_CWD="$PWD" \
@@ -212,16 +262,17 @@ try:
     with open(os.environ['FJ_LEGS']) as f:
         for line in f:
             p = line.rstrip('\n').split('\t')
-            if len(p) < 6: continue
-            label, model, ex, by, to, rn = p[:6]
+            if len(p) < 7: continue
+            label, model, ex, by, to, rno, rng = p[:7]
             legs.append({"label": label, "model": model or None,
                          "exit": i(ex) if str(ex).isdigit() else ex,
                          "bytes": i(by) or 0, "timed_out": to == "true",
-                         "response_n": i(rn)})
+                         "response_n_opus": i(rno), "response_n_gpt": i(rng)})
 except Exception:
     pass
 task = os.environ.get('FJ_TASK', '')
 rec = {"ts": env('FJ_TS'), "kind": "fusion", "run_id": env('FJ_RUNID'), "cwd": env('FJ_CWD'),
+       "anon": "per_judge_shuffle_v1",
        "tag": env('FJ_TAG'), "task_preview": task[:240], "task_chars": len(task),
        "n_legs": i(env('FJ_N')), "signal": env('FJ_SIGNAL'),
        "judges": {"opus": {"pick": i(env('FJ_PICK_O')), "convergence": env('FJ_CONV_O')},
