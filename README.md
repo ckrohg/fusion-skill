@@ -55,7 +55,23 @@ Every run appends one JSON line to `~/.local/share/tenet/fusion/journal.jsonl`
 (machine-global, append-only) recording which model each judge preferred, the
 convergence signal, the tag, and per-leg reliability. `stats.sh` summarizes it.
 
-## Source of truth
+## Source of truth & keeping this repo in sync
 
-The canonical scripts live in `tenet-master/fusion/` (a live tenet project); this repo
-is the portable, shareable copy of the skill. Keep them in sync when editing.
+This repo is a **manual mirror**. The canonical files live elsewhere:
+
+- `fusion.sh`, `stats.sh` → `tenet-master/fusion/` (the live tenet project; the
+  `~/.claude/skills/fusion/` skill dir only *symlinks* to these, so editing tenet
+  updates the live `/fusion` skill automatically)
+- `SKILL.md` → `~/.claude/skills/fusion/` (a real file; `tenet/fusion` has none)
+
+Edits to those sources do **not** auto-propagate here. Run [`sync.sh`](sync.sh) to pull
+them in, review the diff, and commit + push in one step:
+
+```bash
+./sync.sh             # pull canonical files, show diff, commit + push
+./sync.sh --check     # dry run: report drift only (exit 1 if out of sync) — verify anytime
+./sync.sh --no-push   # commit locally, don't push
+```
+
+Source dirs are overridable on other machines via `FUSION_TENET_DIR` /
+`FUSION_SKILL_DIR`.
