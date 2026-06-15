@@ -286,6 +286,6 @@ PY
 fi
 
 if [ "${KEEP:-0}" = "1" ]; then
-  echo >&2; echo "fusion: artifacts in $RUN_DIR (panel.txt, judge_opus.txt, judge_gpt.txt)" >&2
+  echo >&2; echo "fusion: artifacts in $RUN_DIR (panel_opus.txt, panel_gpt.txt, map_opus.txt, map_gpt.txt, judge_opus.txt, judge_gpt.txt, panel_synth.txt)" >&2
 fi
 exit 0   # success — don't let a falsy final test leak a nonzero status
