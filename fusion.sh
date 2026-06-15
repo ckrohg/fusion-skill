@@ -16,8 +16,10 @@
 # Usage:
 #   ./fusion.sh "task..."          |  echo "task" | ./fusion.sh
 #   KEEP=1 ./fusion.sh "..."       # keep run dir (panel + both judge files)
-#   LEG_TIMEOUT=180 ./fusion.sh    # per-leg wall-clock cap (default 240s)
-#   CODEX_REASONING_EFFORT=medium ./fusion.sh   # GPT leg+judge effort (default high)
+#   LEG_TIMEOUT=600 ./fusion.sh    # per-leg wall-clock cap (default 480s, sized for max effort)
+#   FUSION_OPUS_EFFORT=xhigh ./fusion.sh        # Opus judge+synth effort (default max; floor xhigh)
+#   FUSION_OPUS_LEG_EFFORT=xhigh ./fusion.sh    # claude leg effort only (default = FUSION_OPUS_EFFORT)
+#   CODEX_REASONING_EFFORT=high ./fusion.sh     # GPT leg+judge effort (default xhigh = codex ceiling)
 #   CODEX_MODEL=gpt-5.5 ./fusion.sh             # pin the codex model (default gpt-5.5)
 #
 set -uo pipefail
@@ -28,15 +30,25 @@ TASK="${1:-}"
 
 # ---- config ---------------------------------------------------------------
 START_EPOCH="$(date +%s)"
-LEG_TIMEOUT="${LEG_TIMEOUT:-240}"
-JUDGE_TIMEOUT="${JUDGE_TIMEOUT:-300}"
+# Caps are sized for MAX-effort Opus, which thinks substantially longer than the old
+# default. The leg cap is the tightest pressure point (Opus is the sole timeout source),
+# so it gets the bump; judge/synth share the larger cap.
+LEG_TIMEOUT="${LEG_TIMEOUT:-480}"
+JUDGE_TIMEOUT="${JUDGE_TIMEOUT:-600}"
 FUSION_JOURNAL="${FUSION_JOURNAL:-$HOME/.local/share/tenet/fusion/journal.jsonl}"
 FUSION_TAG="${FUSION_TAG:-}"        # optional task-class tag for worldengine analysis
-# GPT leg + GPT judge run through codex. Pin them EXPLICITLY here so fusion never
-# silently follows a change to the global ~/.codex/config.toml, and so they run at
-# full reasoning for these high-stakes calls. Override either via env.
+# Effort is PINNED in-script (never inherited from ambient config) so fusion can't
+# silently drift, and so these high-stakes calls run at full reasoning. Floor is xhigh.
+#   Opus (claude): low|medium|high|xhigh|max   — ceiling = max
+#   GPT  (codex):  minimal|low|medium|high|xhigh — ceiling = xhigh
+# Both vendors default to their ceiling, keeping the panel balanced.
+# NOTE: the override vars are FUSION_*-prefixed on purpose — the Claude Code harness
+# exports CLAUDE_EFFORT into subprocesses, so reading $CLAUDE_EFFORT here would silently
+# inherit the parent session's effort (the very drift this pin exists to prevent).
+OPUS_EFFORT="${FUSION_OPUS_EFFORT:-max}"                  # Opus judge + synthesizer effort
+OPUS_LEG_EFFORT="${FUSION_OPUS_LEG_EFFORT:-$OPUS_EFFORT}" # claude panel legs; flex to xhigh if the leg times out
 CODEX_MODEL="${CODEX_MODEL:-gpt-5.5}"                 # the codex model for leg + judge
-CODEX_EFFORT="${CODEX_REASONING_EFFORT:-high}"        # reasoning effort: minimal|low|medium|high
+CODEX_EFFORT="${CODEX_REASONING_EFFORT:-xhigh}"       # codex ceiling (was high); balances Opus=max
 TIMEOUT_BIN="$(command -v timeout || command -v gtimeout || echo '')"
 maybe_timeout() {                 # maybe_timeout <secs> cmd... (no-op if no timeout bin)
   local secs="$1"; shift
@@ -57,14 +69,14 @@ command -v gemini >/dev/null 2>&1 && LEGS+=("gemini gemini ${GEMINI_MODEL:-gemin
 RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/fusion.XXXXXX")"
 cleanup() { [ "${KEEP:-0}" = "1" ] || rm -rf "$RUN_DIR"; }
 trap cleanup EXIT
-echo "fusion: ${#LEGS[@]} legs -> 2 judges (opus + ${CODEX_MODEL}@${CODEX_EFFORT}) -> synthesize   ($RUN_DIR)" >&2
+echo "fusion: ${#LEGS[@]} legs -> 2 judges (opus@${OPUS_EFFORT} + ${CODEX_MODEL}@${CODEX_EFFORT}) -> synthesize@${OPUS_EFFORT}   ($RUN_DIR)" >&2
 
 # ---- Phase 1: fan-out, parallel, per-leg timeout --------------------------
 run_leg() {                       # $1=label $2=kind $3=model ; reads $TASK
   local label="$1" kind="$2" model="$3"
   local out="$RUN_DIR/$label.out" log="$RUN_DIR/$label.log"
   case "$kind" in
-    claude) maybe_timeout "$LEG_TIMEOUT" claude -p --model "$model" "$TASK"                              >"$out" 2>"$log" ;;
+    claude) maybe_timeout "$LEG_TIMEOUT" claude -p --model "$model" --effort "$OPUS_LEG_EFFORT" "$TASK"  >"$out" 2>"$log" ;;
     codex)  maybe_timeout "$LEG_TIMEOUT" codex exec --skip-git-repo-check -s read-only -m "$CODEX_MODEL" -c model_reasoning_effort="$CODEX_EFFORT" -o "$out" "$TASK" >"$log" 2>&1 ;;
     gemini) maybe_timeout "$LEG_TIMEOUT" gemini -m "$model" -p "$TASK"                                   >"$out" 2>"$log" ;;
     *)      echo "unknown leg kind: $kind" >"$log" ;;
@@ -159,7 +171,7 @@ EOF
 JUDGE_OPUS="$RUN_DIR/judge_opus.txt"; JUDGE_GPT="$RUN_DIR/judge_gpt.txt"
 JP_O="$(make_judge_prompt "$RUN_DIR/panel_opus.txt")"   # Opus judge sees its own shuffle
 JP_G="$(make_judge_prompt "$RUN_DIR/panel_gpt.txt")"    # GPT  judge sees a different shuffle
-( maybe_timeout "$JUDGE_TIMEOUT" claude -p --model opus "$JP_O" >"$JUDGE_OPUS" 2>"$RUN_DIR/judge_opus.log" ) & JPID_O=$!
+( maybe_timeout "$JUDGE_TIMEOUT" claude -p --model opus --effort "$OPUS_EFFORT" "$JP_O" >"$JUDGE_OPUS" 2>"$RUN_DIR/judge_opus.log" ) & JPID_O=$!
 ( maybe_timeout "$JUDGE_TIMEOUT" codex exec --skip-git-repo-check -s read-only -m "$CODEX_MODEL" -c model_reasoning_effort="$CODEX_EFFORT" -o "$JUDGE_GPT" "$JP_G" >"$RUN_DIR/judge_gpt.log" 2>&1 ) & JPID_G=$!
 wait "$JPID_O"; wait "$JPID_G"
 
@@ -234,7 +246,7 @@ $(cat "$JUDGE_GPT")
 RAW RESPONSES:
 $(cat "$PANEL_SYNTH")
 EOF
-maybe_timeout "$JUDGE_TIMEOUT" claude -p --model opus "$(cat "$RUN_DIR/synth_prompt.txt")" 2>"$RUN_DIR/synth.log"
+maybe_timeout "$JUDGE_TIMEOUT" claude -p --model opus --effort "$OPUS_EFFORT" "$(cat "$RUN_DIR/synth_prompt.txt")" 2>"$RUN_DIR/synth.log"
 
 # ---- Journal the run (machine-global, append-only JSONL) -------------------
 # Records WHICH MODEL each judge preferred + the convergence signal per run — the
@@ -259,6 +271,7 @@ if [ "${FUSION_NO_JOURNAL:-0}" != "1" ]; then
   FJ_PICK_O="${PICK_O:-}" FJ_PICK_G="${PICK_G:-}" FJ_CONV_O="${CONV_O:-}" FJ_CONV_G="${CONV_G:-}" \
   FJ_WIN_O="$WIN_O" FJ_WIN_G="$WIN_G" FJ_WALL="$(( $(date +%s) - START_EPOCH ))" \
   FJ_CODEX_MODEL="$CODEX_MODEL" FJ_CODEX_EFFORT="$CODEX_EFFORT" \
+  FJ_OPUS_EFFORT="$OPUS_EFFORT" FJ_OPUS_LEG_EFFORT="$OPUS_LEG_EFFORT" \
   python3 - "$FUSION_JOURNAL" >>"$RUN_DIR/journal.log" 2>&1 <<'PY'
 import json, os, sys
 def env(k):
@@ -282,6 +295,7 @@ task = os.environ.get('FJ_TASK', '')
 rec = {"ts": env('FJ_TS'), "kind": "fusion", "run_id": env('FJ_RUNID'), "cwd": env('FJ_CWD'),
        "anon": "per_judge_shuffle_v1",
        "codex": {"model": env('FJ_CODEX_MODEL'), "effort": env('FJ_CODEX_EFFORT')},
+       "opus_effort": {"judge_synth": env('FJ_OPUS_EFFORT'), "leg": env('FJ_OPUS_LEG_EFFORT')},
        "tag": env('FJ_TAG'), "task_preview": task[:240], "task_chars": len(task),
        "n_legs": i(env('FJ_N')), "signal": env('FJ_SIGNAL'),
        "judges": {"opus": {"pick": i(env('FJ_PICK_O')), "convergence": env('FJ_CONV_O')},

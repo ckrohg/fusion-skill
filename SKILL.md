@@ -80,11 +80,16 @@ answers; an embedded design + a pointed question produces the value.
   `design`, …). **When you invoke /fusion, set FUSION_TAG to a one-word class for the
   task** — it makes the which-model-wins data sliceable and far more useful.
 - `FUSION_NO_JOURNAL=1 ...` — skip journaling for this run.
-- `CODEX_REASONING_EFFORT=medium ...` — reasoning effort for the GPT leg **and** GPT
-  judge (default `high`; values `minimal|low|medium|high`). `CODEX_MODEL=...` pins the
-  codex model (default `gpt-5.5`). These are pinned in-script so fusion never silently
-  follows a change to the global `~/.codex/config.toml`; each run journals
-  `codex.model`/`codex.effort` so you can slice the data by them.
+- `FUSION_OPUS_EFFORT=xhigh ...` — Opus **judge + synthesizer** reasoning effort (default
+  `max`; values `low|medium|high|xhigh|max`). `FUSION_OPUS_LEG_EFFORT=...` sets the claude
+  **panel-leg** effort independently (default = `FUSION_OPUS_EFFORT`). (These are
+  `FUSION_`-prefixed deliberately: the Claude Code harness exports `CLAUDE_EFFORT` into
+  subprocesses, so a `CLAUDE_*` name here would inherit the parent session's effort.)
+- `CODEX_REASONING_EFFORT=high ...` — reasoning effort for the GPT leg **and** GPT judge
+  (default `xhigh` = codex's ceiling; values `minimal|low|medium|high|xhigh`).
+  `CODEX_MODEL=...` pins the codex model (default `gpt-5.5`). All effort is pinned
+  in-script so fusion never silently follows a change to the global config; each run
+  journals `codex.{model,effort}` and `opus_effort.{judge_synth,leg}` to slice by.
 
 ## Journaling & stats
 
@@ -114,10 +119,12 @@ capacity).
 | gpt | gpt-5.5 (codex) | ChatGPT/Codex |
 | gemini | gemini-2.5-flash | Google |
 
-Judges: Opus + GPT-5.5. **3 vendors live** (Anthropic ×2, OpenAI, Google). The codex
-(GPT) leg and judge are pinned in-script to `gpt-5.5` at `high` reasoning effort — they
-do **not** inherit the global `~/.codex/config.toml`, so fusion can't silently drift off
-the intended model/effort. Override per-run with `CODEX_MODEL` / `CODEX_REASONING_EFFORT`.
+Judges: Opus + GPT-5.5. **3 vendors live** (Anthropic ×2, OpenAI, Google). **Effort is
+pinned in-script at each vendor's ceiling** — Opus at `max`, codex/GPT at `xhigh` (its
+top) — so the panel stays balanced and nothing inherits ambient config / silently
+drifts. Floor is `xhigh`; the leg can flex down to `xhigh` via `CLAUDE_LEG_EFFORT` if it
+times out (a completed xhigh leg beats a timed-out max leg), but judge + synth stay
+`max`. Caps are sized for this: `LEG_TIMEOUT` 480s, `JUDGE_TIMEOUT` 600s.
 
 ### Gemini capacity note
 `gemini-2.5-pro` is frequently capacity-exhausted on the free/AI tier — the CLI then
