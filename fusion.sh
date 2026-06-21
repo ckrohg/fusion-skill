@@ -31,10 +31,12 @@ TASK="${1:-}"
 # ---- config ---------------------------------------------------------------
 START_EPOCH="$(date +%s)"
 # Caps are sized for MAX-effort Opus, which thinks substantially longer than the old
-# default. The leg cap is the tightest pressure point (Opus is the sole timeout source),
-# so it gets the bump; judge/synth share the larger cap.
-LEG_TIMEOUT="${LEG_TIMEOUT:-480}"
-JUDGE_TIMEOUT="${JUDGE_TIMEOUT:-600}"
+# default. The leg cap is the tightest pressure point (Opus is the sole timeout source —
+# at max effort a hard task's leg has been observed near ~885s), so it gets the most room;
+# judge/synth read the whole panel (a larger input than any one leg) and share an even
+# larger cap. A cap is a kill-ceiling, not a wait: fast legs/judges still finish when done.
+LEG_TIMEOUT="${LEG_TIMEOUT:-900}"
+JUDGE_TIMEOUT="${JUDGE_TIMEOUT:-1080}"
 FUSION_JOURNAL="${FUSION_JOURNAL:-$HOME/.local/share/tenet/fusion/journal.jsonl}"
 FUSION_TAG="${FUSION_TAG:-}"        # optional task-class tag for worldengine analysis
 # Effort is PINNED in-script (never inherited from ambient config) so fusion can't
@@ -61,10 +63,14 @@ LEGS=(
   "sonnet claude sonnet"
   "gpt    codex  -"
 )
-# Gemini = 3rd vendor. Default to flash: on the free/AI tier gemini-2.5-pro is
-# frequently capacity-exhausted and the CLI retries with long backoffs (hangs the leg).
-# Override with GEMINI_MODEL=gemini-2.5-pro when you have pro capacity.
-command -v gemini >/dev/null 2>&1 && LEGS+=("gemini gemini ${GEMINI_MODEL:-gemini-2.5-flash}")
+# Gemini = 3rd vendor (Google), now via the Antigravity CLI `agy` — the standalone
+# `gemini` CLI was cut off for individuals 2026-06-19 ("migrate to Antigravity"). The
+# model name carries spaces, so it can't ride the space-split LEGS array; it's passed via
+# $AGY_MODEL and resolved in run_leg (placeholder "-" below, exactly like the codex leg).
+# Default to Flash (High): quality dissent without burning the Antigravity Starter quota
+# that Pro would. Override with AGY_MODEL="Gemini 3.1 Pro (High)" when you have Pro capacity.
+AGY_MODEL="${AGY_MODEL:-Gemini 3.5 Flash (High)}"
+command -v agy >/dev/null 2>&1 && LEGS+=("gemini agy -")
 
 RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/fusion.XXXXXX")"
 cleanup() { [ "${KEEP:-0}" = "1" ] || rm -rf "$RUN_DIR"; }
@@ -78,7 +84,7 @@ run_leg() {                       # $1=label $2=kind $3=model ; reads $TASK
   case "$kind" in
     claude) maybe_timeout "$LEG_TIMEOUT" claude -p --model "$model" --effort "$OPUS_LEG_EFFORT" "$TASK"  >"$out" 2>"$log" ;;
     codex)  maybe_timeout "$LEG_TIMEOUT" codex exec --skip-git-repo-check -s read-only -m "$CODEX_MODEL" -c model_reasoning_effort="$CODEX_EFFORT" -o "$out" "$TASK" >"$log" 2>&1 ;;
-    gemini) maybe_timeout "$LEG_TIMEOUT" gemini -m "$model" -p "$TASK"                                   >"$out" 2>"$log" ;;
+    agy)    maybe_timeout "$LEG_TIMEOUT" agy --model "$AGY_MODEL" -p "$TASK"                               >"$out" 2>"$log" ;;
     *)      echo "unknown leg kind: $kind" >"$log" ;;
   esac
   echo "$?" >"$RUN_DIR/$label.exit"
@@ -87,6 +93,7 @@ PIDS=(); NAMES=()
 for leg in "${LEGS[@]}"; do
   set -- $leg
   m="$3"; [ "$2" = "codex" ] && [ "$m" = "-" ] && m="$CODEX_MODEL"   # journal the real pinned model
+  [ "$2" = "agy" ] && m="$AGY_MODEL"                                 # agy model carries spaces; journal it directly
   echo "$m" > "$RUN_DIR/$1.model"
   run_leg "$1" "$2" "$3" &
   PIDS+=("$!"); NAMES+=("$1")
