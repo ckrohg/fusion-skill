@@ -222,6 +222,54 @@ PANEL_SYNTH="$RUN_DIR/panel_synth.txt"; : >"$PANEL_SYNTH"; k=0
 for label in "${OK_LABELS[@]}"; do
   k=$((k+1)); { echo "===== Response $k ====="; cat "$RUN_DIR/$label.out"; echo; } >>"$PANEL_SYNTH"
 done
+
+# ---- Phase 2.5 (2026-07-02): DIVERGENT/MIXED tiebreak — one extra ADVERSARIAL codex pass.
+# Runs only when the judges do NOT both see convergence: it tries to REFUTE each contested
+# bottom line against the canonical panel and names the position that best survives, handed
+# to the synthesizer as a REFEREE note (advisory — synthesis stays Opus). Fail-open: an
+# empty/failed tiebreak leaves synthesis exactly as before. FUSION_TIEBREAK=0 disables;
+# FUSION_FORCE_TIEBREAK=1 runs it regardless of signal (testing). Numbering note: the
+# tiebreak reads panel_synth, so its "Response k" IS the synthesizer's numbering (unlike
+# the judges' private shuffles).
+TIEBREAK_FILE="$RUN_DIR/tiebreak.txt"; TB_RAN=0; TB_WIN=""
+TB_WANT=0
+case "$SIGNAL" in DIVERGENT*|MIXED*) TB_WANT=1 ;; esac
+[ "${FUSION_FORCE_TIEBREAK:-0}" = "1" ] && TB_WANT=1
+if [ "${FUSION_TIEBREAK:-1}" = "1" ] && [ "$TB_WANT" = "1" ] && [ "$n" -ge 2 ]; then
+  TB_RAN=1; TB_T0="$(date +%s)"
+  [ "${FUSION_FORCE_TIEBREAK:-0}" = "1" ] && tbwhy="forced (FUSION_FORCE_TIEBREAK=1)" || tbwhy="judges did not both see convergence"
+  echo "  tiebreak: $tbwhy -> adversarial ${CODEX_MODEL} referee pass" >&2
+  TB_PROMPT="You are a TIEBREAK REFEREE. Two independent judges disagreed on whether $n responses to a task converge (judge A verdict: ${CONV_O:-?}, judge B verdict: ${CONV_G:-?}). Be adversarial: identify each materially different bottom-line position among the responses, try hard to REFUTE each one, and name the position that best SURVIVES refutation. Do not reward confidence or length.
+Your FIRST line MUST be exactly: TIEBREAK: Response <k>   (k = 1..$n from the RESPONSES below)
+Second line: SURVIVES: <one sentence — why this position survives refutation best>
+Then at most 250 words of refutation analysis.
+
+TASK:
+$TASK
+
+JUDGE A ANALYSIS:
+$(cat "$JUDGE_OPUS")
+
+JUDGE B ANALYSIS:
+$(cat "$JUDGE_GPT")
+
+RESPONSES:
+$(cat "$PANEL_SYNTH")"
+  # </dev/null: with a non-tty stdin held open, codex exec blocks on stdin until the timeout
+  maybe_timeout "$JUDGE_TIMEOUT" codex exec --skip-git-repo-check -s read-only -m "$CODEX_MODEL" -c model_reasoning_effort="$CODEX_EFFORT" -o "$TIEBREAK_FILE" "$TB_PROMPT" >"$RUN_DIR/tiebreak.log" 2>&1 </dev/null
+  TB_PICK="$(grep -m1 -oiE '^TIEBREAK:[[:space:]]*Response[[:space:]]*[0-9]+' "$TIEBREAK_FILE" 2>/dev/null | grep -oE '[0-9]+' | head -1)"
+  if [ -n "$TB_PICK" ] && [ "$TB_PICK" -ge 1 ] 2>/dev/null && [ "$TB_PICK" -le "$n" ] 2>/dev/null; then
+    TB_WIN="${OK_LABELS[$((TB_PICK-1))]}"
+    echo "    tiebreak referee: Response $TB_PICK -> $TB_WIN" >&2
+  else
+    echo "    tiebreak referee: unparseable/empty — synthesis proceeds without it (see tiebreak.log)" >&2
+  fi
+  if [ -f "$HOME/.local/lib/codex-metrics.sh" ]; then
+    . "$HOME/.local/lib/codex-metrics.sh" 2>/dev/null
+    command -v cxm >/dev/null 2>&1 && cxm fusion-tiebreak tiebreak signal="${SIGNAL%% *}" winner="${TB_WIN:-unparsed}" secs=$(( $(date +%s) - TB_T0 )) tokens="$(cxm_tokens "$RUN_DIR/tiebreak.log" 2>/dev/null || echo 0)"
+  fi
+fi
+
 cat > "$RUN_DIR/synth_prompt.txt" <<EOF
 You are a synthesizer. Two independent judges (A = Claude Opus, B = GPT-5.5) each
 analyzed $n anonymized responses and named a preferred one.
@@ -235,6 +283,10 @@ not by number.)
 - If DIVERGENT or MIXED, weigh both judges' reasoning, take the best-supported position,
   and surface the key disagreement in ONE short clause so the reader sees where the
   models diverged.
+- If a TIEBREAK REFEREE section is present below, it is a third, adversarial pass that
+  refuted the contested positions against each other; its "Response k" numbering DOES
+  match the RAW RESPONSES below. Treat refutation-survival as strong (not absolute)
+  evidence when choosing the position to build on.
 
 Merge the strongest elements across responses, resolve conflicts toward the better-
 supported claim, fill gaps where you can, and silently drop anything a judge flagged as
@@ -250,6 +302,7 @@ $(cat "$JUDGE_OPUS")
 JUDGE B (GPT-5.5):
 $(cat "$JUDGE_GPT")
 
+$( [ "$TB_RAN" = "1" ] && [ -s "$TIEBREAK_FILE" ] && { echo "TIEBREAK REFEREE (${CODEX_MODEL}, adversarial — ran because the judges did not both see convergence):"; cat "$TIEBREAK_FILE"; echo; } )
 RAW RESPONSES:
 $(cat "$PANEL_SYNTH")
 EOF
@@ -277,6 +330,7 @@ if [ "${FUSION_NO_JOURNAL:-0}" != "1" ]; then
   FJ_TAG="$FUSION_TAG" FJ_SIGNAL="${SIGNAL%% *}" FJ_N="$n" \
   FJ_PICK_O="${PICK_O:-}" FJ_PICK_G="${PICK_G:-}" FJ_CONV_O="${CONV_O:-}" FJ_CONV_G="${CONV_G:-}" \
   FJ_WIN_O="$WIN_O" FJ_WIN_G="$WIN_G" FJ_WALL="$(( $(date +%s) - START_EPOCH ))" \
+  FJ_TB_RAN="$TB_RAN" FJ_TB_WIN="$TB_WIN" \
   FJ_CODEX_MODEL="$CODEX_MODEL" FJ_CODEX_EFFORT="$CODEX_EFFORT" \
   FJ_OPUS_EFFORT="$OPUS_EFFORT" FJ_OPUS_LEG_EFFORT="$OPUS_LEG_EFFORT" \
   python3 - "$FUSION_JOURNAL" >>"$RUN_DIR/journal.log" 2>&1 <<'PY'
@@ -308,6 +362,7 @@ rec = {"ts": env('FJ_TS'), "kind": "fusion", "run_id": env('FJ_RUNID'), "cwd": e
        "judges": {"opus": {"pick": i(env('FJ_PICK_O')), "convergence": env('FJ_CONV_O')},
                   "gpt":  {"pick": i(env('FJ_PICK_G')), "convergence": env('FJ_CONV_G')}},
        "winners": {"opus_judge": env('FJ_WIN_O'), "gpt_judge": env('FJ_WIN_G')},
+       "tiebreak": {"ran": env('FJ_TB_RAN') == '1', "winner": env('FJ_TB_WIN')},
        "legs": legs, "wall_s": i(env('FJ_WALL')) or 0}
 with open(sys.argv[1], "a") as out:
     out.write(json.dumps(rec) + "\n")
