@@ -83,7 +83,10 @@ run_leg() {                       # $1=label $2=kind $3=model ; reads $TASK
   local out="$RUN_DIR/$label.out" log="$RUN_DIR/$label.log"
   case "$kind" in
     claude) maybe_timeout "$LEG_TIMEOUT" claude -p --model "$model" --effort "$OPUS_LEG_EFFORT" "$TASK"  >"$out" 2>"$log" ;;
-    codex)  maybe_timeout "$LEG_TIMEOUT" codex exec --skip-git-repo-check -s read-only -m "$CODEX_MODEL" -c model_reasoning_effort="$CODEX_EFFORT" -o "$out" "$TASK" >"$log" 2>&1 ;;
+    # </dev/null on every codex call: with a held-open non-tty stdin codex exec blocks on
+    # "Reading additional input from stdin...". Backgrounding usually implies </dev/null,
+    # but that's an implicit-job-control subtlety — make it explicit, not inherited.
+    codex)  maybe_timeout "$LEG_TIMEOUT" codex exec --skip-git-repo-check -s read-only -m "$CODEX_MODEL" -c model_reasoning_effort="$CODEX_EFFORT" -o "$out" "$TASK" >"$log" 2>&1 </dev/null ;;
     agy)    maybe_timeout "$LEG_TIMEOUT" agy --model "$AGY_MODEL" -p "$TASK"                               >"$out" 2>"$log" ;;
     *)      echo "unknown leg kind: $kind" >"$log" ;;
   esac
@@ -179,7 +182,7 @@ JUDGE_OPUS="$RUN_DIR/judge_opus.txt"; JUDGE_GPT="$RUN_DIR/judge_gpt.txt"
 JP_O="$(make_judge_prompt "$RUN_DIR/panel_opus.txt")"   # Opus judge sees its own shuffle
 JP_G="$(make_judge_prompt "$RUN_DIR/panel_gpt.txt")"    # GPT  judge sees a different shuffle
 ( maybe_timeout "$JUDGE_TIMEOUT" claude -p --model opus --effort "$OPUS_EFFORT" "$JP_O" >"$JUDGE_OPUS" 2>"$RUN_DIR/judge_opus.log" ) & JPID_O=$!
-( maybe_timeout "$JUDGE_TIMEOUT" codex exec --skip-git-repo-check -s read-only -m "$CODEX_MODEL" -c model_reasoning_effort="$CODEX_EFFORT" -o "$JUDGE_GPT" "$JP_G" >"$RUN_DIR/judge_gpt.log" 2>&1 ) & JPID_G=$!
+( maybe_timeout "$JUDGE_TIMEOUT" codex exec --skip-git-repo-check -s read-only -m "$CODEX_MODEL" -c model_reasoning_effort="$CODEX_EFFORT" -o "$JUDGE_GPT" "$JP_G" >"$RUN_DIR/judge_gpt.log" 2>&1 </dev/null ) & JPID_G=$!
 wait "$JPID_O"; wait "$JPID_G"
 
 parse_pick() { grep -m1 -oiE 'PREFERRED:[[:space:]]*Response[[:space:]]*[0-9]+' "$1" 2>/dev/null | grep -oE '[0-9]+' | head -1; }
