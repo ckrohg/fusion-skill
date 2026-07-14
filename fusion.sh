@@ -3,7 +3,7 @@
 # fusion.sh — subscription-backed model fusion (no API keys)
 #
 #   Phase 1  fan-out : panel of native subscription CLIs run in parallel (per-leg timeout)
-#   Phase 2  judge   : TWO cross-vendor judges (Claude Opus + GPT-5.5) each emit a
+#   Phase 2  judge   : TWO cross-vendor judges (Claude Opus + GPT/codex) each emit a
 #                      PREFERRED pick + a CONVERGENT/DIVERGENT verdict on the panel
 #   Phase 3  synth   : consensus-gated synthesis on Claude Opus
 #                      (confident when judges agree; surfaces the split when they don't)
@@ -19,8 +19,8 @@
 #   LEG_TIMEOUT=600 ./fusion.sh    # per-leg wall-clock cap (default 480s, sized for max effort)
 #   FUSION_OPUS_EFFORT=xhigh ./fusion.sh        # Opus judge+synth effort (default max; floor xhigh)
 #   FUSION_OPUS_LEG_EFFORT=xhigh ./fusion.sh    # claude leg effort only (default = FUSION_OPUS_EFFORT)
-#   CODEX_REASONING_EFFORT=high ./fusion.sh     # GPT leg+judge effort (default xhigh = codex ceiling)
-#   CODEX_MODEL=gpt-5.5 ./fusion.sh             # pin the codex model (default gpt-5.5)
+#   CODEX_REASONING_EFFORT=high ./fusion.sh     # GPT leg+judge effort (default ultra = gpt-5.6 ceiling)
+#   CODEX_MODEL=gpt-5.5 ./fusion.sh             # pin the codex model (default gpt-5.6-sol)
 #
 set -uo pipefail
 
@@ -41,22 +41,22 @@ FUSION_JOURNAL="${FUSION_JOURNAL:-$HOME/.local/share/tenet/fusion/journal.jsonl}
 FUSION_TAG="${FUSION_TAG:-}"        # optional task-class tag for worldengine analysis
 # Effort is PINNED in-script (never inherited from ambient config) so fusion can't
 # silently drift, and so these high-stakes calls run at full reasoning. Floor is xhigh.
-#   Opus (claude): low|medium|high|xhigh|max   — ceiling = max
-#   GPT  (codex):  minimal|low|medium|high|xhigh — ceiling = xhigh
+#   Opus (claude): low|medium|high|xhigh|max            — ceiling = max
+#   GPT  (codex):  minimal|low|medium|high|xhigh|max|ultra — ceiling = ultra (gpt-5.6)
 # Both vendors default to their ceiling, keeping the panel balanced.
-# Re-verified 2026-07-14 (codex CLI 0.144.4, live API probes): gpt-5.5 is the newest
-# model ChatGPT-subscription auth accepts (gpt-5.5-pro and gpt-5.6 exist in the CLI but
-# the API rejects them: "not supported when using Codex with a ChatGPT account"), and
-# xhigh is gpt-5.5's effort ceiling (anything above is a 400: supported values end at
-# xhigh). So gpt-5.5 @ xhigh below IS latest-model-max-effort; re-probe when the plan
-# or CLI changes.
+# Verified 2026-07-14 (codex CLI 0.144.4, live API probes): gpt-5.6-sol is the newest
+# flagship reachable on ChatGPT-subscription auth — the BARE slug gpt-5.6 and gpt-5.5-pro
+# are rejected ("not supported when using Codex with a ChatGPT account"), but the variant
+# slugs gpt-5.6-{sol,luna,terra} all work, and sol accepts max AND ultra effort (docs:
+# low→ultra; sol = "strongest capability for complex coding"). gpt-5.5's own ceiling
+# remains xhigh, so if you override CODEX_MODEL back to gpt-5.5, drop the effort too.
 # NOTE: the override vars are FUSION_*-prefixed on purpose — the Claude Code harness
 # exports CLAUDE_EFFORT into subprocesses, so reading $CLAUDE_EFFORT here would silently
 # inherit the parent session's effort (the very drift this pin exists to prevent).
 OPUS_EFFORT="${FUSION_OPUS_EFFORT:-max}"                  # Opus judge + synthesizer effort
 OPUS_LEG_EFFORT="${FUSION_OPUS_LEG_EFFORT:-$OPUS_EFFORT}" # claude panel legs; flex to xhigh if the leg times out
-CODEX_MODEL="${CODEX_MODEL:-gpt-5.5}"                 # the codex model for leg + judge
-CODEX_EFFORT="${CODEX_REASONING_EFFORT:-xhigh}"       # codex ceiling (was high); balances Opus=max
+CODEX_MODEL="${CODEX_MODEL:-gpt-5.6-sol}"             # the codex model for leg + judge
+CODEX_EFFORT="${CODEX_REASONING_EFFORT:-ultra}"       # gpt-5.6 ceiling (gpt-5.5 caps at xhigh); balances Opus=max
 TIMEOUT_BIN="$(command -v timeout || command -v gtimeout || echo '')"
 maybe_timeout() {                 # maybe_timeout <secs> cmd... (no-op if no timeout bin)
   local secs="$1"; shift
@@ -218,11 +218,11 @@ elif [ -n "$CONV_O$CONV_G" ]; then
 else
   SIGNAL="UNDETERMINED — convergence verdict could not be parsed"
 fi
-PICKNOTE="picks: Opus->${WIN_O:-?}, GPT-5.5->${WIN_G:-?}  (judges preferred the $AGREE leg)"
+PICKNOTE="picks: Opus->${WIN_O:-?}, GPT->${WIN_G:-?}  (judges preferred the $AGREE leg)"
 echo "  judge signal: $SIGNAL" >&2
 echo "    $PICKNOTE" >&2
 [ -s "$JUDGE_OPUS" ] || echo "(Judge A / Opus unavailable — see judge_opus.log)" > "$JUDGE_OPUS"
-[ -s "$JUDGE_GPT" ]  || echo "(Judge B / GPT-5.5 unavailable — see judge_gpt.log)" > "$JUDGE_GPT"
+[ -s "$JUDGE_GPT" ]  || echo "(Judge B / GPT ${CODEX_MODEL} unavailable — see judge_gpt.log)" > "$JUDGE_GPT"
 
 # ---- Phase 3: consensus-gated synthesis -----------------------------------
 # canonical panel for the synthesizer; its numbering is independent of either judge's
@@ -280,7 +280,7 @@ $(cat "$PANEL_SYNTH")"
 fi
 
 cat > "$RUN_DIR/synth_prompt.txt" <<EOF
-You are a synthesizer. Two independent judges (A = Claude Opus, B = GPT-5.5) each
+You are a synthesizer. Two independent judges (A = Claude Opus, B = GPT/codex) each
 analyzed $n anonymized responses and named a preferred one.
 
 JUDGE SIGNAL: $SIGNAL
@@ -308,7 +308,7 @@ $TASK
 JUDGE A (Opus):
 $(cat "$JUDGE_OPUS")
 
-JUDGE B (GPT-5.5):
+JUDGE B (GPT):
 $(cat "$JUDGE_GPT")
 
 $( [ "$TB_RAN" = "1" ] && [ -s "$TIEBREAK_FILE" ] && { echo "TIEBREAK REFEREE (${CODEX_MODEL}, adversarial — ran because the judges did not both see convergence):"; cat "$TIEBREAK_FILE"; echo; } )

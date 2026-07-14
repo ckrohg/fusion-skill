@@ -16,7 +16,7 @@ triggers:
 
 Replicates OpenRouter-Fusion / opencode-fusion locally, but **every leg is a native
 subscription-authenticated CLI** — no API keys. Runs the panel in parallel, has two
-**cross-vendor judges** (Claude Opus + GPT-5.5) each pick a preferred answer and rule
+**cross-vendor judges** (Claude Opus + GPT gpt-5.6-sol) each pick a preferred answer and rule
 the panel CONVERGENT or DIVERGENT, then synthesizes one answer on Claude Opus.
 
 Script (symlinked to the source of truth in `tenet-master/fusion/`):
@@ -86,8 +86,8 @@ answers; an embedded design + a pointed question produces the value.
   `FUSION_`-prefixed deliberately: the Claude Code harness exports `CLAUDE_EFFORT` into
   subprocesses, so a `CLAUDE_*` name here would inherit the parent session's effort.)
 - `CODEX_REASONING_EFFORT=high ...` — reasoning effort for the GPT leg **and** GPT judge
-  (default `xhigh` = codex's ceiling; values `minimal|low|medium|high|xhigh`).
-  `CODEX_MODEL=...` pins the codex model (default `gpt-5.5`). All effort is pinned
+  (default `ultra` = gpt-5.6's ceiling; values `minimal|low|medium|high|xhigh|max|ultra` — note gpt-5.5 caps at `xhigh`).
+  `CODEX_MODEL=...` pins the codex model (default `gpt-5.6-sol`). All effort is pinned
   in-script so fusion never silently follows a change to the global config; each run
   journals `codex.{model,effort}` and `opus_effort.{judge_synth,leg}` to slice by.
 
@@ -116,15 +116,15 @@ capacity).
 |-----|-------|--------------|
 | opus | claude-opus-4-8 | Claude Max/Pro |
 | sonnet | claude-sonnet-4-6 | Claude Max/Pro |
-| gpt | gpt-5.5 (codex) | ChatGPT/Codex |
+| gpt | gpt-5.6-sol (codex) | ChatGPT/Codex |
 | gemini | gemini-2.5-flash | Google |
 
-Judges: Opus + GPT-5.5. **3 vendors live** (Anthropic ×2, OpenAI, Google). **Effort is
-pinned in-script at each vendor's ceiling** — Opus at `max`, codex/GPT at `xhigh` (its
+Judges: Opus + GPT (gpt-5.6-sol). **3 vendors live** (Anthropic ×2, OpenAI, Google). **Effort is
+pinned in-script at each vendor's ceiling** — Opus at `max`, codex/GPT at `ultra` (gpt-5.6's
 top) — so the panel stays balanced and nothing inherits ambient config / silently
 drifts. Floor is `xhigh`; the leg can flex down to `xhigh` via `FUSION_OPUS_LEG_EFFORT`
 if it times out (a completed xhigh leg beats a timed-out max leg), but judge + synth stay
-`max`. Caps are sized for this: `LEG_TIMEOUT` 480s, `JUDGE_TIMEOUT` 600s.
+`max`. Caps are sized for this: `LEG_TIMEOUT` 900s, `JUDGE_TIMEOUT` 1080s.
 
 ### Gemini capacity note
 `gemini-2.5-pro` is frequently capacity-exhausted on the free/AI tier — the CLI then
