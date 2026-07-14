@@ -44,6 +44,12 @@ FUSION_TAG="${FUSION_TAG:-}"        # optional task-class tag for worldengine an
 #   Opus (claude): low|medium|high|xhigh|max   — ceiling = max
 #   GPT  (codex):  minimal|low|medium|high|xhigh — ceiling = xhigh
 # Both vendors default to their ceiling, keeping the panel balanced.
+# Re-verified 2026-07-14 (codex CLI 0.144.4, live API probes): gpt-5.5 is the newest
+# model ChatGPT-subscription auth accepts (gpt-5.5-pro and gpt-5.6 exist in the CLI but
+# the API rejects them: "not supported when using Codex with a ChatGPT account"), and
+# xhigh is gpt-5.5's effort ceiling (anything above is a 400: supported values end at
+# xhigh). So gpt-5.5 @ xhigh below IS latest-model-max-effort; re-probe when the plan
+# or CLI changes.
 # NOTE: the override vars are FUSION_*-prefixed on purpose — the Claude Code harness
 # exports CLAUDE_EFFORT into subprocesses, so reading $CLAUDE_EFFORT here would silently
 # inherit the parent session's effort (the very drift this pin exists to prevent).
