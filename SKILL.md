@@ -114,10 +114,12 @@ capacity).
 
 | Leg | Model | Subscription |
 |-----|-------|--------------|
-| opus | claude-opus-4-8 | Claude Max/Pro |
+| fable | claude-fable-5 | Claude Max/Pro |
 | sonnet | claude-sonnet-4-6 | Claude Max/Pro |
 | gpt | gpt-5.6-sol (codex) | ChatGPT/Codex |
 | gemini | gemini-2.5-flash | Google |
+
+Top Anthropic leg = Fable 5 while available (since 2026-07-14; swap back to `opus` in the LEGS array if the alias stops resolving — the panel degrades gracefully either way). Judges + synth deliberately stay on Opus: the judge is the measuring instrument behind the journal's longitudinal stats.
 
 Judges: Opus + GPT (gpt-5.6-sol). **3 vendors live** (Anthropic ×2, OpenAI, Google). **Effort is
 pinned in-script at each vendor's ceiling** — Opus at `max`, codex/GPT at `ultra` (gpt-5.6's

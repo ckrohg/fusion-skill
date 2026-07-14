@@ -65,10 +65,16 @@ maybe_timeout() {                 # maybe_timeout <secs> cmd... (no-op if no tim
 
 # ---- legs: "label kind model" (the editable panel) ------------------------
 LEGS=(
-  "opus   claude opus"
+  "fable  claude fable"
   "sonnet claude sonnet"
   "gpt    codex  -"
 )
+# Top Anthropic leg = Fable 5 while it's available (2026-07-14; Mythos-class, above
+# Opus). `claude -p --model fable --effort max` verified live; if the alias ever stops
+# resolving the leg just fails and the panel degrades to 3 — swap "fable" back to
+# "opus" here to restore. Judges + synth stay on OPUS deliberately: the judge is the
+# measuring instrument behind 143+ journaled runs, and swapping it mid-stream would
+# confound the longitudinal win-share/convergence stats.
 # Gemini = 3rd vendor (Google), now via the Antigravity CLI `agy` — the standalone
 # `gemini` CLI was cut off for individuals 2026-06-19 ("migrate to Antigravity"). The
 # model name carries spaces, so it can't ride the space-split LEGS array; it's passed via
