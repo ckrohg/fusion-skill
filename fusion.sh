@@ -94,16 +94,24 @@ run_leg() {                       # $1=label $2=kind $3=model ; reads $TASK
   local label="$1" kind="$2" model="$3" rc=0
   local out="$RUN_DIR/$label.out" log="$RUN_DIR/$label.log"
   case "$kind" in
-    claude) maybe_timeout "$LEG_TIMEOUT" claude -p --model "$model" --effort "$OPUS_LEG_EFFORT" "$TASK"  >"$out" 2>"$log"; rc=$?
+    claude) local t0=$SECONDS
+            maybe_timeout "$LEG_TIMEOUT" claude -p --model "$model" --effort "$OPUS_LEG_EFFORT" "$TASK"  >"$out" 2>"$log"; rc=$?
+            local elapsed=$((SECONDS - t0))
             # Fable availability guard: if the fable alias stops working on the Claude
             # subscription (e.g. moves to API-only billing), fall back to OPUS instead of
-            # losing the top Anthropic leg. Triggers only on a NO-OUTPUT failure that isn't
-            # a timeout (a model-access error fails in seconds; a 124 already spent the
-            # wall clock — rerunning would double it). Journal records the real model used.
-            if [ "$model" = "fable" ] && [ "$rc" -ne 124 ] && [ ! -s "$out" ]; then
-              echo "[fusion] fable leg failed fast (rc=$rc, no output) — falling back to opus" >>"$log"
-              echo "opus" >"$RUN_DIR/$label.model"
-              maybe_timeout "$LEG_TIMEOUT" claude -p --model opus --effort "$OPUS_LEG_EFFORT" "$TASK" >"$out" 2>>"$log"; rc=$?
+            # losing the top Anthropic leg. Gated on a genuinely FAST no-output failure —
+            # elapsed <= FUSION_FABLE_FAST_WINDOW (default 90s; entitlement errors return in
+            # seconds) and not a 124 timeout. A slow failure (model thought for minutes then
+            # died) is NOT the cutoff signature, and an opus rerun there would double the
+            # leg phase's wall clock. Journal records the real model used either way.
+            if [ "$model" = "fable" ] && [ ! -s "$out" ]; then
+              if [ "$rc" -ne 124 ] && [ "$elapsed" -le "${FUSION_FABLE_FAST_WINDOW:-90}" ]; then
+                echo "[fusion] fable leg failed fast (rc=$rc, ${elapsed}s, no output) — falling back to opus" >>"$log"
+                echo "opus" >"$RUN_DIR/$label.model"
+                maybe_timeout "$LEG_TIMEOUT" claude -p --model opus --effort "$OPUS_LEG_EFFORT" "$TASK" >"$out" 2>>"$log"; rc=$?
+              else
+                echo "[fusion] fable leg produced no output (rc=$rc, ${elapsed}s) — slow failure/timeout, NOT falling back (panel degrades)" >>"$log"
+              fi
             fi ;;
     # </dev/null on every codex call: with a held-open non-tty stdin codex exec blocks on
     # "Reading additional input from stdin...". Backgrounding usually implies </dev/null,
