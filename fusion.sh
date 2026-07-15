@@ -91,18 +91,28 @@ echo "fusion: ${#LEGS[@]} legs -> 2 judges (opus@${OPUS_EFFORT} + ${CODEX_MODEL}
 
 # ---- Phase 1: fan-out, parallel, per-leg timeout --------------------------
 run_leg() {                       # $1=label $2=kind $3=model ; reads $TASK
-  local label="$1" kind="$2" model="$3"
+  local label="$1" kind="$2" model="$3" rc=0
   local out="$RUN_DIR/$label.out" log="$RUN_DIR/$label.log"
   case "$kind" in
-    claude) maybe_timeout "$LEG_TIMEOUT" claude -p --model "$model" --effort "$OPUS_LEG_EFFORT" "$TASK"  >"$out" 2>"$log" ;;
+    claude) maybe_timeout "$LEG_TIMEOUT" claude -p --model "$model" --effort "$OPUS_LEG_EFFORT" "$TASK"  >"$out" 2>"$log"; rc=$?
+            # Fable availability guard: if the fable alias stops working on the Claude
+            # subscription (e.g. moves to API-only billing), fall back to OPUS instead of
+            # losing the top Anthropic leg. Triggers only on a NO-OUTPUT failure that isn't
+            # a timeout (a model-access error fails in seconds; a 124 already spent the
+            # wall clock — rerunning would double it). Journal records the real model used.
+            if [ "$model" = "fable" ] && [ "$rc" -ne 124 ] && [ ! -s "$out" ]; then
+              echo "[fusion] fable leg failed fast (rc=$rc, no output) — falling back to opus" >>"$log"
+              echo "opus" >"$RUN_DIR/$label.model"
+              maybe_timeout "$LEG_TIMEOUT" claude -p --model opus --effort "$OPUS_LEG_EFFORT" "$TASK" >"$out" 2>>"$log"; rc=$?
+            fi ;;
     # </dev/null on every codex call: with a held-open non-tty stdin codex exec blocks on
     # "Reading additional input from stdin...". Backgrounding usually implies </dev/null,
     # but that's an implicit-job-control subtlety — make it explicit, not inherited.
-    codex)  maybe_timeout "$LEG_TIMEOUT" codex exec --skip-git-repo-check -s read-only -m "$CODEX_MODEL" -c model_reasoning_effort="$CODEX_EFFORT" -o "$out" "$TASK" >"$log" 2>&1 </dev/null ;;
-    agy)    maybe_timeout "$LEG_TIMEOUT" agy --model "$AGY_MODEL" -p "$TASK"                               >"$out" 2>"$log" ;;
-    *)      echo "unknown leg kind: $kind" >"$log" ;;
+    codex)  maybe_timeout "$LEG_TIMEOUT" codex exec --skip-git-repo-check -s read-only -m "$CODEX_MODEL" -c model_reasoning_effort="$CODEX_EFFORT" -o "$out" "$TASK" >"$log" 2>&1 </dev/null; rc=$? ;;
+    agy)    maybe_timeout "$LEG_TIMEOUT" agy --model "$AGY_MODEL" -p "$TASK"                               >"$out" 2>"$log"; rc=$? ;;
+    *)      echo "unknown leg kind: $kind" >"$log"; rc=1 ;;
   esac
-  echo "$?" >"$RUN_DIR/$label.exit"
+  echo "$rc" >"$RUN_DIR/$label.exit"
 }
 PIDS=(); NAMES=()
 for leg in "${LEGS[@]}"; do

@@ -119,7 +119,7 @@ capacity).
 | gpt | gpt-5.6-sol (codex) | ChatGPT/Codex |
 | gemini | gemini-2.5-flash | Google |
 
-Top Anthropic leg = Fable 5 while available (since 2026-07-14; swap back to `opus` in the LEGS array if the alias stops resolving — the panel degrades gracefully either way). Judges + synth deliberately stay on Opus: the judge is the measuring instrument behind the journal's longitudinal stats.
+Top Anthropic leg = Fable 5 while available (since 2026-07-14). If fable stops working on the subscription (e.g. moves to API-only billing), the leg **auto-falls back to Opus** on a fast no-output failure (not on timeout) and the journal records the real model used — the top Anthropic voice is never lost. Judges + synth deliberately stay on Opus: the judge is the measuring instrument behind the journal's longitudinal stats.
 
 Judges: Opus + GPT (gpt-5.6-sol). **3 vendors live** (Anthropic ×2, OpenAI, Google). **Effort is
 pinned in-script at each vendor's ceiling** — Opus at `max`, codex/GPT at `ultra` (gpt-5.6's
