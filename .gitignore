@@ -6,4 +6,5 @@ fusion.*/
 
 # if this folder is ever used as a live tenet project, keep its state out
 .tenet/
-.claude/settings.local.json
+.claude/
+.mcp.json
